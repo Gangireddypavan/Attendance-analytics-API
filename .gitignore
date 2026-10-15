@@ -12,3 +12,6 @@ openapi.yaml
 DATA_MODEL.md
 sample_seed.py
 sample_data/
+
+# Private interview notes
+INTERVIEW_PREP.md

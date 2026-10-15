@@ -1,20 +1,51 @@
 # DECISIONS.md
 
-1. **Indexes.** `employees`: unique `emp_code` (one employee per code; lookups and `$lookup` joins), `(department,
-   emp_code)` (department filter + sort, trend), `joined_on` (summary headcount). `attendance_logs`: unique
-   `(emp_code, date)` (one record per day, race-safe punch-in, monthly summary), `(date -1, emp_code 1)` (list sort,
-   month ranges for the leaderboard), `(emp_code, punch_in -1)` (punch-out finds the latest punch-in),
-   `(status, date -1, emp_code 1)` (status filter). I rejected an index on `late_minutes`: the leaderboard is already
-   narrowed by month, so it would only slow down writes.
+## 1. Indexes
 
-2. **Punch-in race.** Both requests compute the same `(emp_code, date)` and call `insert_one`. The unique index lets
-   exactly one insert succeed; the other gets `DuplicateKeyError`, which I return as 409. There is no find-then-insert.
+The most important index is the unique index on attendance_logs (emp_code, date). It makes sure there is only one
+record per employee per day, and it is what makes punch-in safe when two requests come at the same time.
 
-3. **Ties.** `$rank` gives tied employees the same rank, and I filter `rank <= limit` after ranking, so both are
-   returned (more rows than `limit`), ordered by `emp_code`.
+On employees, emp_code is unique so two employees can never have the same code.
 
-4. **Headcount.** The pipeline starts from `employees` (joined by month end) and `$lookup`s their logs. `$unwind` keeps
-   empty arrays, so an employee with no logs still adds 1 to headcount and 0 to everything else.
+The other indexes are there so the queries do not scan the whole collection:
+- employees (department, emp_code): filter by department, sorted by emp_code
+- employees (joined_on): headcount in the department summary
+- attendance_logs (date, emp_code): the attendance list sort and month ranges for the leaderboard
+- attendance_logs (emp_code, punch_in): punch-out finds the latest punch-in quickly
+- attendance_logs (status, date, emp_code): the attendance list filtered by status
 
-5. **100x data.** Keep a per-employee monthly totals collection updated on every write, so the summary stops running one
-   `$lookup` per employee.
+I decided not to add an index on late_minutes. The leaderboard already filters by month first, so that index would
+only make every write slower without helping much.
+
+## 2. Punch-in race
+
+Both requests look up EMP0001 in employees. It exists, so neither gets a 404. Both then call insert_one. There is a
+unique index on (emp_code, date), so MongoDB lets only one of them in. The second insert fails with DuplicateKeyError,
+and I return 409.
+
+I did not use find-then-insert because both find_one calls can find nothing at the same moment, and then both inserts
+succeed and we get a duplicate record.
+
+## 3. Ties
+
+If two employees are tied at the cutoff, both are returned. I use $rank, which gives tied employees the same rank
+(1, 2, 3, 3). The limit is applied to the rank, not to the number of rows, so with limit 3 both people ranked 3rd are
+included. Tied rows are ordered by emp_code. Cutting at exactly 3 rows would drop one of them for no fair reason.
+
+## 4. Headcount
+
+An employee with zero logs this month has no log documents at all. If I started from logs, that person would never
+appear anywhere in the pipeline, so they could not be counted. Starting from employees means every person is in the
+pipeline from step one.
+
+Then I $lookup attendance_logs (this month only, grouped into stats). For a zero-log employee the lookup returns an
+empty array, and $unwind with preserveNullAndEmptyArrays: true keeps that employee, just with stats missing. Then I
+$group by department with headcount: {$sum: 1}, so they are counted.
+
+## 5. One thing I would change for 100x the data
+
+Right now the department summary does one $lookup per employee. With 100x the data that gets slow. I would keep a
+small collection with monthly totals per employee and update it on every punch-in, punch-out and correction. Then the
+summary just reads these ready totals instead of going through all the logs every time.
+
+
