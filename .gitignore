@@ -1,0 +1,14 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+CLAUDE.md
+app/main_backup_*
+.vscode/
+
+# Kit files: not part of the submission (problem statement must not be published)
+PROBLEM_STATEMENT.docx
+openapi.yaml
+DATA_MODEL.md
+sample_seed.py
+sample_data/
